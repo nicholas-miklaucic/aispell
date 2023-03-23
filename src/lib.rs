@@ -1,13 +1,8 @@
 use fast_symspell::{AsciiStringStrategy, Suggestion, SymSpell, SymSpellBuilder, Verbosity};
 use model::Model;
-use seqalign::measures::LevenshteinDamerau;
-use seqalign::Align;
-
-// // Get the edit script.
-use seqalign::measures::LevenshteinDamerauOp;
-use seqalign::op::IndexedOperation;
 
 pub mod edit;
+pub mod lm;
 pub mod model;
 
 fn check_suggestions(word: &'static str, edit_distance: i64) -> Vec<Suggestion> {
@@ -33,28 +28,23 @@ pub struct Correction {
 }
 
 /// Returns a list of corrections, sorted by most probable to least.
-fn corrections<T: Model<u8>>(word: &'static str, edit_distance: i64, model: &T) -> Vec<Correction> {
+pub fn corrections<T: Model<u8>>(
+    word: &'static str,
+    edit_distance: i64,
+    model: &T,
+) -> Vec<Correction> {
     let mut corrs: Vec<Correction> = check_suggestions(word, edit_distance)
         .into_iter()
         .map(|sug| Correction {
             term: sug.term.clone(),
-            prob: model.total_prob(word.as_bytes(), sug.term.as_bytes()),
+            prob: model.total_prob(word.as_bytes(), sug.term.as_bytes())
+                * (sug.count as f64 / 100.0),
         })
         .collect();
 
     // note how b is first, not a: this sorts in descending order
     corrs.sort_unstable_by(|a, b| b.prob.partial_cmp(&a.prob).unwrap());
     corrs
-}
-
-fn edit_ops(orig: &'static str, sug: Suggestion) -> Vec<IndexedOperation<LevenshteinDamerauOp>> {
-    let src = sug.term.as_bytes();
-    let tgt = orig.as_bytes();
-
-    let measure = LevenshteinDamerau::new(1, 1, 1, 1);
-    let alignment = measure.align(src, tgt);
-
-    alignment.edit_script()
 }
 
 #[cfg(test)]
@@ -66,8 +56,8 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let orig = "otol";
-        let result = check_suggestions(orig, 2);
+        // let orig = "otol";
+        // let result = check_suggestions(orig, 2);
         //assert_eq!(result, vec![]);
 
         // let comps: Vec<String> = result
@@ -77,11 +67,11 @@ mod tests {
         //     .collect();
         // assert_eq!(comps, vec!["".to_string()]);
 
-        let ops: Vec<Vec<IndexedOperation<LevenshteinDamerauOp>>> = result
-            .into_iter()
-            .take(3)
-            .map(|s| edit_ops(orig, s))
-            .collect();
+        // let ops: Vec<Vec<IndexedOperation<LevenshteinDamerauOp>>> = result
+        //     .into_iter()
+        //     .take(3)
+        //     .map(|s| edit_ops(orig, s))
+        //     .collect();
 
         // let test_ops: Vec<Vec<IndexedOperation<LevenshteinDamerauOp>>> = vec![];
         // assert_eq!(ops, test_ops);
@@ -102,7 +92,15 @@ mod tests {
         let orig = "teh";
         let corrs = corrections(orig, 1, &KbdModel::default());
         let probs: Vec<f64> = corrs.iter().map(|c| c.prob).collect();
+        let prob_sum: f64 = probs.iter().sum();
+        let normed_probs: Vec<f64> = probs.iter().map(|x| x / prob_sum).collect();
         let terms: Vec<String> = corrs.into_iter().map(|c| c.term).collect();
-        assert_eq!(terms, vec!["artificial".to_string()]);
+        assert_eq!(
+            terms[0],
+            "the".to_string(),
+            "\n{:?}\n{:?}",
+            terms,
+            normed_probs
+        );
     }
 }

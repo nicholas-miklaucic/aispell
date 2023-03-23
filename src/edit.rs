@@ -1,7 +1,5 @@
 //! Computes the optimal edit sequence to transform one string into another.
 
-use std::iter::repeat;
-
 use seqalign::{
     measures::{LevenshteinDamerau, LevenshteinDamerauOp},
     op::IndexedOperation,
