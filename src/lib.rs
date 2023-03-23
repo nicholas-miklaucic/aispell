@@ -1,5 +1,7 @@
 use fast_symspell::{AsciiStringStrategy, Suggestion, SymSpell, SymSpellBuilder, Verbosity};
+use lm::LM;
 use model::Model;
+use tch::{Kind, Tensor};
 
 pub mod edit;
 pub mod lm;
@@ -9,10 +11,11 @@ fn check_suggestions(word: &'static str, edit_distance: i64) -> Vec<Suggestion> 
     let mut symspell: SymSpell<AsciiStringStrategy> = SymSpellBuilder::default()
         .max_dictionary_edit_distance(edit_distance)
         .prefix_length(2)
+        .count_threshold(0)
         .build()
         .unwrap();
 
-    symspell.load_dictionary("data/frequency_dictionary_en_82_765.txt", 0, 1, " ");
+    symspell.load_dictionary("data/custom_dictionary.txt", 0, 1, " ");
 
     symspell.lookup(word, Verbosity::All, edit_distance)
 }
@@ -25,22 +28,48 @@ pub struct Correction {
 
     /// The probability of the term being correct.
     pub prob: f64,
+
+    /// The keyboard probability.
+    kbd_prob: f64,
+
+    /// The language model probability.
+    lm_prob: f64,
 }
 
 /// Returns a list of corrections, sorted by most probable to least.
-pub fn corrections<T: Model<u8>>(
+pub fn corrections<T: Model<u8>, L: LM<u8>>(
     word: &'static str,
     edit_distance: i64,
-    model: &T,
+    kbd_model: &T,
+    context: Option<&'static str>,
+    lang_model: &L,
 ) -> Vec<Correction> {
     let mut corrs: Vec<Correction> = check_suggestions(word, edit_distance)
         .into_iter()
         .map(|sug| Correction {
             term: sug.term.clone(),
-            prob: model.total_prob(word.as_bytes(), sug.term.as_bytes())
-                * (sug.count as f64 / 100.0),
+            prob: 0.0,
+            kbd_prob: kbd_model.total_prob(word.as_bytes(), sug.term.as_bytes()),
+            lm_prob: 0.0,
         })
         .collect();
+
+    let losses = Tensor::of_slice(
+        &corrs
+            .iter()
+            .map(|corr| lang_model.loss(context.unwrap_or(" ").as_bytes(), corr.term.as_bytes()))
+            .collect::<Vec<_>>(),
+    );
+    let losses = (losses * -3).softmax(0, Kind::Float);
+    for (corr, loss) in corrs.iter_mut().zip(losses.iter::<f64>().unwrap()) {
+        corr.lm_prob = loss;
+        corr.prob = corr.kbd_prob * corr.lm_prob;
+    }
+
+    let probs_sum: f64 = corrs.iter().map(|c| c.prob).sum();
+    for corr in &mut corrs {
+        corr.prob /= probs_sum;
+    }
 
     // note how b is first, not a: this sorts in descending order
     corrs.sort_unstable_by(|a, b| b.prob.partial_cmp(&a.prob).unwrap());
@@ -49,10 +78,21 @@ pub fn corrections<T: Model<u8>>(
 
 #[cfg(test)]
 mod tests {
-    use crate::model::KbdModel;
+    use crate::{lm::LLM, model::KbdModel};
 
     use super::*;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_symspell() {
+        assert_eq!(
+            check_suggestions("Pairs", 1)
+                .into_iter()
+                .map(|s| s.term)
+                .collect::<Vec<_>>(),
+            vec!["Pamirs", "Paris", "airs", "fairs", "hairs", "lairs", "pairs"]
+        );
+    }
 
     #[test]
     fn it_works() {
@@ -80,17 +120,15 @@ mod tests {
     #[test]
     fn test_corrections() {
         let orig = "otol";
-        let corrs = corrections(orig, 1, &KbdModel::default());
+        let lm = LLM.lock().unwrap();
+        let corrs = corrections(orig, 1, &KbdModel::default(), None, &*lm);
         assert_eq!(
             corrs.into_iter().map(|c| c.term).collect::<Vec<String>>(),
             vec!["tool".to_string()]
         );
-    }
 
-    #[test]
-    fn test_corrections1() {
         let orig = "teh";
-        let corrs = corrections(orig, 1, &KbdModel::default());
+        let corrs = corrections(orig, 1, &KbdModel::default(), None, &*lm);
         let probs: Vec<f64> = corrs.iter().map(|c| c.prob).collect();
         let prob_sum: f64 = probs.iter().sum();
         let normed_probs: Vec<f64> = probs.iter().map(|x| x / prob_sum).collect();
@@ -102,5 +140,20 @@ mod tests {
             terms,
             normed_probs
         );
+    }
+
+    #[test]
+    fn test_corrections_ctxt() {
+        let orig = "Pairs";
+        let lm = LLM.lock().unwrap();
+        let corrs = corrections(
+            orig,
+            1,
+            &KbdModel::default(),
+            Some("The capital of France is "),
+            &*lm,
+        );
+        let terms: Vec<String> = corrs.iter().map(|c| c.term.clone()).collect();
+        assert_eq!(terms[0], "Pairs".to_string(), "\n{:#?}", corrs);
     }
 }

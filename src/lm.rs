@@ -1,7 +1,9 @@
 //! Defines the core `LM` trait and an implementation thereof.
 
 use std::str::from_utf8;
+use std::sync::Mutex;
 
+use lazy_static::lazy_static;
 use rust_bert::gpt2::{GPT2LMHeadModel, Gpt2Config};
 use rust_bert::gpt2::{
     Gpt2ConfigResources, Gpt2MergesResources, Gpt2ModelResources, Gpt2VocabResources,
@@ -76,17 +78,21 @@ impl LM<u8> for GptLM {
         })
         .unwrap();
 
-        dbg!(model_output.lm_logits.size());
+        // dbg!(model_output.lm_logits.size());
 
         let loss: f64 = model_output
             .lm_logits
             .swapaxes(1, 2)
             .cross_entropy_loss::<Tensor>(&input_ids, None, Reduction::None, -100, 0.0)
-            .mean_dim([1_i64].as_slice(), false, Float)
+            .sum_dim_intlist([1_i64].as_slice(), false, Float)
             .into();
 
         loss
     }
+}
+
+lazy_static! {
+    pub static ref LLM: Mutex<GptLM> = GptLM::try_new().unwrap().into();
 }
 
 #[cfg(test)]
@@ -96,7 +102,7 @@ mod tests {
     #[test]
     fn test_prob() {
         let ctxt = b"Jackson is the capital of ";
-        let lm = GptLM::try_new().unwrap();
+        let lm = LLM.lock().unwrap();
         let loss1 = lm.loss(ctxt, b"Mississippi");
         let loss2 = lm.loss(ctxt, b"Mississipi");
         assert!(loss1 < loss2, "\n{:.3} < {:.3} failed", loss1, loss2);
