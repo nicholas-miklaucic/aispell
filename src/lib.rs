@@ -1,13 +1,17 @@
+use cached::proc_macro::cached;
+use cached::SizedCache;
 use fast_symspell::{AsciiStringStrategy, Suggestion, SymSpell, SymSpellBuilder, Verbosity};
 use lm::LM;
 use model::Model;
 use tch::{Kind, Tensor};
 
+pub mod checker;
 pub mod edit;
 pub mod lm;
 pub mod model;
 
-fn check_suggestions(word: &'static str, edit_distance: i64) -> Vec<Suggestion> {
+#[cached]
+fn load_dictionary(edit_distance: i64) -> SymSpell<AsciiStringStrategy> {
     let mut symspell: SymSpell<AsciiStringStrategy> = SymSpellBuilder::default()
         .max_dictionary_edit_distance(edit_distance)
         .prefix_length(2)
@@ -16,7 +20,16 @@ fn check_suggestions(word: &'static str, edit_distance: i64) -> Vec<Suggestion> 
         .unwrap();
 
     symspell.load_dictionary("data/custom_dictionary.txt", 0, 1, " ");
+    symspell
+}
 
+#[cached(
+    type = "SizedCache<String, Vec<Suggestion>>",
+    create = "{ SizedCache::with_size(100) }",
+    convert = r#"{ format!("{}  {}", word, edit_distance) }"#
+)]
+fn check_suggestions(word: &str, edit_distance: i64) -> Vec<Suggestion> {
+    let symspell = load_dictionary(edit_distance);
     symspell.lookup(word, Verbosity::All, edit_distance)
 }
 
@@ -30,18 +43,18 @@ pub struct Correction {
     pub prob: f64,
 
     /// The keyboard probability.
-    kbd_prob: f64,
+    pub kbd_prob: f64,
 
     /// The language model probability.
-    lm_prob: f64,
+    pub lm_prob: f64,
 }
 
 /// Returns a list of corrections, sorted by most probable to least.
 pub fn corrections<T: Model<u8>, L: LM<u8>>(
-    word: &'static str,
+    word: &str,
     edit_distance: i64,
     kbd_model: &T,
-    context: Option<&'static str>,
+    context: Option<&str>,
     lang_model: &L,
 ) -> Vec<Correction> {
     let mut corrs: Vec<Correction> = check_suggestions(word, edit_distance)

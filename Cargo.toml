@@ -7,7 +7,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.70"
+cached = "0.42.0"
 fast_symspell = "0.1.7"
+iced = "0.8.0"
 lazy_static = "1.4.0"
 rust-bert = "0.20.0"
 rust_tokenizers = "8.0.0"
