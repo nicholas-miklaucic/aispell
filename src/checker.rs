@@ -2,10 +2,12 @@
 
 use crate::{
     corrections,
-    lm::{GptLM, LLM, LM},
+    lm::{GptLM, LM},
     model::{KbdModel, Model},
     Correction,
 };
+use iced::widget::{text_input, Column};
+use iced::Element;
 use iced::{
     widget::{column, container},
     Length, Sandbox,
@@ -14,18 +16,13 @@ use iced::{
     widget::{row, text},
     Theme,
 };
-use iced::{
-    widget::{text_input, Column},
-    Application,
-};
-use iced::{Command, Element};
 use lazy_static::lazy_static;
 
 #[derive(Clone, Debug)]
 /// The state of the checker.
 pub struct Checker<K: Model<u8>, L: LM<u8>> {
     /// The current text.
-    text: String,
+    pub text: String,
 
     /// The keyboard model.
     km: K,
@@ -37,7 +34,7 @@ pub struct Checker<K: Model<u8>, L: LM<u8>> {
 pub type EnChecker = Checker<KbdModel, GptLM>;
 
 impl EnChecker {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let lm = GptLM::try_new().unwrap();
         let km = KbdModel::default();
         let text = "Truly intelligent spell chucking".to_string();
@@ -45,7 +42,7 @@ impl EnChecker {
         Self { text, km, lm }
     }
 
-    fn compute_corrections(&self) -> Vec<Correction> {
+    pub fn compute_corrections(&self) -> Vec<Correction> {
         let words: Vec<&str> = self.text.trim_end_matches(' ').split(' ').collect();
 
         let (prev, term) = match words.as_slice() {

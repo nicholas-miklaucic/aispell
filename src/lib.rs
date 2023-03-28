@@ -3,12 +3,14 @@ use cached::SizedCache;
 use fast_symspell::{AsciiStringStrategy, Suggestion, SymSpell, SymSpellBuilder, Verbosity};
 use lm::LM;
 use model::Model;
+use serde::{Deserialize, Serialize};
 use tch::{Kind, Tensor};
 
 pub mod checker;
 pub mod edit;
 pub mod lm;
 pub mod model;
+pub mod onnx_lm;
 
 #[cached]
 fn load_dictionary(edit_distance: i64) -> SymSpell<AsciiStringStrategy> {
@@ -26,7 +28,7 @@ fn load_dictionary(edit_distance: i64) -> SymSpell<AsciiStringStrategy> {
 #[cached(
     type = "SizedCache<String, Vec<Suggestion>>",
     create = "{ SizedCache::with_size(100) }",
-    convert = r#"{ format!("{}  {}", word, edit_distance) }"#
+    convert = r#"{ format!("{}\n{}", word, edit_distance) }"#
 )]
 fn check_suggestions(word: &str, edit_distance: i64) -> Vec<Suggestion> {
     let symspell = load_dictionary(edit_distance);
@@ -34,7 +36,7 @@ fn check_suggestions(word: &str, edit_distance: i64) -> Vec<Suggestion> {
 }
 
 /// A correction with a probability for a word.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Correction {
     /// The suggested correction.
     pub term: String,
@@ -70,10 +72,10 @@ pub fn corrections<T: Model<u8>, L: LM<u8>>(
     let losses = Tensor::of_slice(
         &corrs
             .iter()
-            .map(|corr| lang_model.loss(context.unwrap_or(" ").as_bytes(), corr.term.as_bytes()))
+            .map(|corr| lang_model.loss(context.unwrap_or(". ").as_bytes(), corr.term.as_bytes()))
             .collect::<Vec<_>>(),
     );
-    let losses = (losses * -3).softmax(0, Kind::Float);
+    let losses = (losses * -1).softmax(0, Kind::Float);
     for (corr, loss) in corrs.iter_mut().zip(losses.iter::<f64>().unwrap()) {
         corr.lm_prob = loss;
         corr.prob = corr.kbd_prob * corr.lm_prob;
@@ -130,6 +132,14 @@ mod tests {
         // assert_eq!(ops, test_ops);
     }
 
+    // #[test]
+    // fn test_cache() {
+    //     let lm = LLM.lock().unwrap();
+    //     let ctxt = "";
+    //     let corrs = corrections("ba", 2, &KbdModel::default(), Some(ctxt), &*lm);
+    //     assert_eq!(corrs[0].term, "ba", "\n{:#?}", corrs);
+    // }
+
     #[test]
     fn test_corrections() {
         let orig = "otol";
@@ -142,17 +152,7 @@ mod tests {
 
         let orig = "teh";
         let corrs = corrections(orig, 1, &KbdModel::default(), None, &*lm);
-        let probs: Vec<f64> = corrs.iter().map(|c| c.prob).collect();
-        let prob_sum: f64 = probs.iter().sum();
-        let normed_probs: Vec<f64> = probs.iter().map(|x| x / prob_sum).collect();
-        let terms: Vec<String> = corrs.into_iter().map(|c| c.term).collect();
-        assert_eq!(
-            terms[0],
-            "the".to_string(),
-            "\n{:?}\n{:?}",
-            terms,
-            normed_probs
-        );
+        assert_eq!(corrs[0].term, "the".to_string(), "\n{:#?}", corrs);
     }
 
     #[test]
@@ -167,6 +167,6 @@ mod tests {
             &*lm,
         );
         let terms: Vec<String> = corrs.iter().map(|c| c.term.clone()).collect();
-        assert_eq!(terms[0], "Pairs".to_string(), "\n{:#?}", corrs);
+        assert_eq!(terms[0], "Paris".to_string(), "\n{:#?}", corrs);
     }
 }
