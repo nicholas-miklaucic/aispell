@@ -7,6 +7,7 @@ use aispell::{
     corrections,
     lm::{GptLM, LLM, LM},
     model::{KbdModel, Model},
+    onnx_lm::OnnxLM,
     Correction,
 };
 use anyhow::Result;
@@ -42,7 +43,7 @@ impl Corrector {
     /// The classification runner itself
     fn runner(receiver: mpsc::Receiver<Message>) -> Result<()> {
         // Needs to be in sync runtime, async doesn't work
-        let lm = GptLM::try_new().unwrap();
+        let lm = OnnxLM::try_new_cached("bloom-560m").unwrap();
         let km = KbdModel::default();
 
         while let Ok((req, sender)) = receiver.recv() {

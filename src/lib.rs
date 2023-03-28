@@ -11,6 +11,7 @@ pub mod edit;
 pub mod lm;
 pub mod model;
 pub mod onnx_lm;
+pub mod wonnx_lm;
 
 #[cached]
 fn load_dictionary(edit_distance: i64) -> SymSpell<AsciiStringStrategy> {
