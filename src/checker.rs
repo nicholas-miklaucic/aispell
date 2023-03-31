@@ -2,7 +2,8 @@
 
 use crate::{
     corrections,
-    lm::{GptLM, LM},
+    gpt_lm::LLM,
+    lm::LM,
     model::{KbdModel, Model},
     Correction,
 };

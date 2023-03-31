@@ -1,15 +1,9 @@
 use std::{
-    sync::{mpsc, Mutex},
+    sync::mpsc,
     thread::{self, JoinHandle},
 };
 
-use aispell::{
-    corrections,
-    lm::{GptLM, LLM, LM},
-    model::{KbdModel, Model},
-    onnx_lm::OnnxLM,
-    Correction,
-};
+use aispell::{corrections, model::KbdModel, rwkv::RwkvLM, Correction};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::{sync::oneshot, task};
@@ -43,7 +37,8 @@ impl Corrector {
     /// The classification runner itself
     fn runner(receiver: mpsc::Receiver<Message>) -> Result<()> {
         // Needs to be in sync runtime, async doesn't work
-        let lm = OnnxLM::try_new_cached("bloom-560m").unwrap();
+        // let lm = OnnxLM::try_new_cached("bloom-560m").unwrap();
+        let lm = RwkvLM::try_new().unwrap();
         let km = KbdModel::default();
 
         while let Ok((req, sender)) = receiver.recv() {

@@ -40,7 +40,7 @@ impl OnnxLM {
         let model = ConditionalGenerationModel::new_from_file(
             environment.into(),
             model_path,
-            Device::CPU,
+            Device::CUDA,
             GraphOptimizationLevel::Level3,
         )?;
 

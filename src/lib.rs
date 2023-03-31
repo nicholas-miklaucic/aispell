@@ -6,11 +6,19 @@ use model::Model;
 use serde::{Deserialize, Serialize};
 use tch::{Kind, Tensor};
 
-pub mod checker;
 pub mod edit;
 pub mod lm;
 pub mod model;
 pub mod onnx_lm;
+pub mod rwkv;
+
+#[cfg(all(feature = "rust_bert", feature = "iced"))]
+pub mod checker;
+
+#[cfg(feature = "rust_bert")]
+pub mod gpt_lm;
+
+#[cfg(feature = "wonnx")]
 pub mod wonnx_lm;
 
 #[cached]
@@ -94,7 +102,7 @@ pub fn corrections<T: Model<u8>, L: LM<u8>>(
 
 #[cfg(test)]
 mod tests {
-    use crate::{lm::LLM, model::KbdModel};
+    use crate::{model::KbdModel, onnx_lm::BLOOM};
 
     use super::*;
     use pretty_assertions::assert_eq;
@@ -144,7 +152,7 @@ mod tests {
     #[test]
     fn test_corrections() {
         let orig = "otol";
-        let lm = LLM.lock().unwrap();
+        let lm = BLOOM.lock().unwrap();
         let corrs = corrections(orig, 1, &KbdModel::default(), None, &*lm);
         assert_eq!(
             corrs.into_iter().map(|c| c.term).collect::<Vec<String>>(),
@@ -159,7 +167,7 @@ mod tests {
     #[test]
     fn test_corrections_ctxt() {
         let orig = "Pairs";
-        let lm = LLM.lock().unwrap();
+        let lm = BLOOM.lock().unwrap();
         let corrs = corrections(
             orig,
             1,
