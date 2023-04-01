@@ -1,12 +1,12 @@
 #![allow(clippy::upper_case_acronyms)]
 
 use anyhow::{anyhow, Result};
-use arrayfire::{constant, Array, DType};
+use arrayfire::{constant, Array};
 use tokenizers::Tokenizer;
 
 use super::{
     model::{RWKVLayerState, RWKV},
-    util::ReqOps,
+    util::{Elem, ReqOps},
 };
 
 /// Context that holds the state of the RWKV model.
@@ -28,15 +28,16 @@ pub struct RWKVContext<T: ReqOps> {
     pub n_layers: usize,
 }
 
-impl<T: ReqOps> RWKVContext<T> {
-    pub fn new(rwkv: RWKV<T>, tokenizer: Tokenizer) -> Self {
-        let [n_vocab, n_embed, _, _] = rwkv.emb.dims().get();
+impl RWKVContext<Elem> {
+    pub fn new(rwkv: RWKV<Elem>, tokenizer: Tokenizer) -> Self {
+        let dims = rwkv.emb.dims();
+        let [n_vocab, n_embed, _, _] = dims.get();
         let n_layers = rwkv.layers.len();
 
         let initial_state = std::iter::repeat(RWKVLayerState::new(*n_embed as usize))
             .take(n_layers)
             .collect::<Vec<_>>();
-        let initial_probs = constant!(T::zero(); *n_vocab);
+        let initial_probs = constant!(0.0; *n_vocab);
 
         Self {
             n_embed: *n_embed as usize,
@@ -75,7 +76,7 @@ impl<T: ReqOps> RWKVContext<T> {
     /// vector and figures out what token to pick.
     pub fn infer_next_token(
         &mut self,
-        mut samplefun: impl FnMut(&Array<T>) -> Result<usize>,
+        mut samplefun: impl FnMut(&Array<Elem>) -> Result<usize>,
     ) -> Result<Option<String>> {
         let tokid = samplefun(&self.last_probs)?;
         if tokid == 0 {

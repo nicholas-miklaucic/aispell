@@ -7,7 +7,7 @@ edition = "2021"
 wonnx = ["dep:wonnx", "transformers"]
 iced = ["dep:iced"]
 rust_bert = ["dep:rust-bert", "transformers"]
-transformers = ["dep:edge-transformers", "dep:rust_tokenizers", "dep:tch", "dep:ndarray"]
+transformers = ["dep:edge-transformers", "dep:rust_tokenizers", "dep:tch", "dep:ndarray", "dep:ort"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -23,7 +23,7 @@ lazy_static = "1.4.0"
 mmap-rs = "0.5.0"
 ndarray = {version = "0.15.6", features = ["rayon"], optional = true}
 num-traits = "0.2.15"
-ort = {version = "1.14.3", features = ["cuda"]}
+ort = {version = "1.14.3", features = ["cuda"], optional = true}
 rust-bert = {version = "0.20.0", optional = true}
 rust_tokenizers = {version = "8.0.0", optional = true}
 safetensors = "0.3.0"

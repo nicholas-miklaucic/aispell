@@ -1,4 +1,4 @@
-use arrayfire::Array;
+use arrayfire::{dim4, Array};
 use cached::proc_macro::cached;
 use cached::SizedCache;
 use fast_symspell::{AsciiStringStrategy, Suggestion, SymSpell, SymSpellBuilder, Verbosity};
@@ -81,15 +81,20 @@ pub fn corrections<T: Model<u8>, L: LM<u8>>(
         })
         .collect();
 
+    let n_corrs = corrs.len();
+
     let losses = Array::new(
         &corrs
             .iter()
             .map(|corr| lang_model.loss(context.unwrap_or(". ").as_bytes(), corr.term.as_bytes()))
             .collect::<Vec<_>>(),
+        dim4!(n_corrs as u64, 1, 1, 1),
     );
-    let losses = softmax(losses * -1);
-    for (corr, loss) in corrs.iter_mut().zip(losses.iter::<f64>().unwrap()) {
-        corr.lm_prob = loss;
+    let losses: Array<f64> = softmax(&(losses * -1).cast()).cast();
+    let mut loss_vec: Vec<f64> = vec![0.0; n_corrs];
+    losses.host(&mut loss_vec);
+    for (corr, loss) in corrs.iter_mut().zip(loss_vec.iter()) {
+        corr.lm_prob = *loss;
         corr.prob = corr.kbd_prob * corr.lm_prob;
     }
 

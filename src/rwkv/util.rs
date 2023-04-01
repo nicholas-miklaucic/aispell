@@ -1,43 +1,59 @@
 use anyhow::{anyhow, Result};
-use arrayfire::{dim4, Array, ConstGenerator, HasAfEnum};
+use arrayfire::{dim4, print, Array, ConstGenerator, HasAfEnum, ImplicitPromote};
 use mmap_rs::{MmapFlags, MmapOptions};
 use num_traits::{One, Zero};
 use safetensors::tensor::TensorView;
 
 pub trait BaseReqOps
 where
-    Self: Sized + Default + Clone + HasAfEnum + Zero + One + ConstGenerator<OutType = Self>,
+    Self: Sized
+        + Default
+        + Clone
+        + HasAfEnum
+        + Zero
+        + One
+        + ConstGenerator<OutType = Self>
+        + ImplicitPromote<f64>,
 {
 }
 
 impl<T> BaseReqOps for T where
-    T: Sized + Default + Clone + HasAfEnum + Zero + One + ConstGenerator<OutType = T>
+    T: Sized
+        + Default
+        + Clone
+        + HasAfEnum
+        + Zero
+        + One
+        + ConstGenerator<OutType = T>
+        + ImplicitPromote<f64>
 {
 }
 
 pub trait ReqOps
 where
     Self: BaseReqOps,
-    <Self as HasAfEnum>::UnaryOutType: BaseReqOps,
 {
 }
 
 impl ReqOps for f32 {}
 impl ReqOps for f64 {}
 
+pub type Elem = f32;
+
 pub trait ConvertBF16Tensor: ReqOps {
     fn tensor_to_array1(tensor: &TensorView<'_>) -> Array<Self>;
     fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array<Self>>;
 }
 
-impl ConvertBF16Tensor for f32 {
+impl ConvertBF16Tensor for Elem {
     fn tensor_to_array1(tensor: &TensorView<'_>) -> Array<Self> {
-        let f32_t = bf16_tensor_to_f32(tensor);
-        Array::new(&f32_t, dim4!(f32_t.len() as u64, 1, 1, 1))
+        let elem_t = bf16_tensor_to_elem(tensor);
+        let arr = Array::new(&elem_t, dim4!(elem_t.len() as u64, 1, 1, 1));
+        arr
     }
 
     fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array<Self>> {
-        // Squeeze all the things.
+        dbg!(tensor.shape());
         let shp = tensor
             .shape()
             .iter()
@@ -46,8 +62,8 @@ impl ConvertBF16Tensor for f32 {
             .collect::<Vec<usize>>();
         anyhow::ensure!(shp.len() == 2, "Bad shape");
         Ok(Array::new(
-            &bf16_tensor_to_f32(tensor),
-            dim4!(shp[0], shp[1], 1, 1),
+            &bf16_tensor_to_elem(tensor),
+            dim4!(shp[0] as u64, shp[1] as u64, 1, 1),
         ))
     }
 }
@@ -67,20 +83,16 @@ pub fn mmap_file(s: &str) -> Result<mmap_rs::Mmap> {
     }
 }
 
-pub fn sigmoid<T: ReqOps>(x: &Array<T>) -> Array<T> {
-    x.map(|val| T::one() / (T::one() + (-(*val)).exp()))
-}
-
 /// Helper function to convert a SafeTensors TensorView into a flat
-/// vector of f32. The number of dimensions doesn't matter at this
+/// vector of Elem. The number of dimensions doesn't matter at this
 /// point.
-fn bf16_tensor_to_f32(tensor: &TensorView<'_>) -> Vec<f32> {
+fn bf16_tensor_to_elem(tensor: &TensorView<'_>) -> Vec<Elem> {
     assert_eq!(tensor.dtype(), safetensors::Dtype::BF16);
     tensor
         .data()
         .chunks(2)
         .map(|i| half::bf16::from_le_bytes([i[0], i[1]]).to_f32())
-        .collect::<Vec<f32>>()
+        .collect()
 }
 
 /// Magical stuff I don't understand too well. It takes the list of probabilities
@@ -88,12 +100,12 @@ fn bf16_tensor_to_f32(tensor: &TensorView<'_>) -> Vec<f32> {
 
 // disabling because I don't have rand
 
-// pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<f32>>(
+// pub fn sample_probs<T: ReqOps + num_traits::AsPrimitive<Elem>>(
 //     rng: &mut impl rand::Rng,
 //     probs: &ArrayView1<T>,
 //     forever: bool, // Never select EndOfDocument token.
-//     temperature: f32,
-//     top_p: f32,
+//     temperature: Elem,
+//     top_p: Elem,
 // ) -> usize {
 //     use rand::distributions::{Distribution, WeightedError, WeightedIndex};
 
@@ -115,7 +127,7 @@ fn bf16_tensor_to_f32(tensor: &TensorView<'_>) -> Vec<f32> {
 //         .unwrap_or_default();
 //     let cutoff = sorted_probs[cutoffidx].as_();
 //     let mut probs = probs.map(|i| {
-//         let i: f32 = i.as_();
+//         let i: Elem = i.as_();
 //         if i < cutoff {
 //             0.0
 //         } else {
@@ -139,11 +151,11 @@ fn bf16_tensor_to_f32(tensor: &TensorView<'_>) -> Vec<f32> {
 
 #[allow(dead_code)]
 mod dumdot {
-    use arrayfire::{matmul, MatProp};
+    use arrayfire::{matmul, FloatingPoint, MatProp};
 
     use super::{Array, ReqOps};
 
-    pub fn pardot<T: ReqOps>(lhs: &Array<T>, rhs: &Array<T>) -> Array<T> {
+    pub fn pardot<T: ReqOps + FloatingPoint>(lhs: &Array<T>, rhs: &Array<T>) -> Array<T> {
         matmul(lhs, rhs, MatProp::NONE, MatProp::NONE)
     }
 }

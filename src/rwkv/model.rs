@@ -1,7 +1,9 @@
 #![allow(clippy::upper_case_acronyms)]
-use arrayfire::{constant, exp, meanvar, sqrt, view, Array, HasAfEnum, VarianceBias};
+use arrayfire::{
+    clamp, constant, exp, max_all, meanvar, pow, row, sigmoid, sqrt, sum_all, Array, VarianceBias,
+};
 
-use super::util::{pardot, sigmoid, ReqOps};
+use super::util::{pardot, Elem, ReqOps};
 
 #[derive(Clone)]
 /// Corresponds to:
@@ -128,18 +130,19 @@ impl<T: ReqOps> RWKVLayerState<T> {
     }
 }
 
-impl<T: ReqOps> Mix<T> {
-    pub fn mix(&self, x: &Array<T>, last_x: &Array<T>) -> Array<T> {
-        x * &self.0 + last_x * (-self.0 + T::one())
+impl Mix<Elem> {
+    pub fn mix(&self, x: &Array<Elem>, last_x: &Array<Elem>) -> Array<Elem> {
+        let ans: Array<Elem> = x * &self.0 + last_x * (1.0_f32 - &self.0);
+        ans
     }
 }
 
-impl<T: ReqOps> Attention<T> {
+impl Attention<Elem> {
     pub fn time_mixing(
         &self,
-        x: &Array<T>,
-        state: &RWKVLayerState<T>,
-    ) -> (Array<T>, (Array<T>, Array<T>)) {
+        x: &Array<Elem>,
+        state: &RWKVLayerState<Elem>,
+    ) -> (Array<Elem>, (Array<Elem>, Array<Elem>)) {
         let last_x = &state.tm_state;
         let last_num = &state.tm_num;
         let last_den = &state.tm_den;
@@ -163,54 +166,57 @@ impl<T: ReqOps> Attention<T> {
     }
 }
 
-impl<T: ReqOps> FeedForwardNetwork<T> {
-    pub fn channel_mixing(&self, x: &Array<T>, state: &RWKVLayerState<T>) -> Array<T> {
-        let last_x = &state.cm_state.view();
+impl FeedForwardNetwork<Elem> {
+    pub fn channel_mixing(&self, x: &Array<Elem>, state: &RWKVLayerState<Elem>) -> Array<Elem> {
+        let last_x = &state.cm_state;
         let k = pardot(&self.key_weight, &self.time.mix_k.mix(x, last_x));
         let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(x, last_x));
-        let vk = pardot(
-            &self.value_weight,
-            &k.mapv(|val| val.max(T::zero()).powi(2)),
-        );
+        let vk_vec: Array<Elem> = pow(&clamp(&k, &std::f32::MIN, &2.0, true), &2.0, true).cast();
+        let vk = pardot(&self.value_weight, &vk_vec);
 
         sigmoid(&r) * &vk
     }
 }
 
-impl<T: ReqOps> LayerNorm<T> {
+impl LayerNorm<Elem> {
     /// Normalize a 1D array.
-    pub fn norm(&self, x: &Array<T>) -> Array<T> {
-        let (mean, var) = meanvar(x, constant!(1; x.elements()), VarianceBias::DEFAULT, 0);
-        let std = sqrt(var);
+    pub fn norm(&self, x: &Array<Elem>) -> Array<Elem> {
+        let (mean, var) = meanvar(
+            x,
+            &constant!(1.0; x.elements() as u64),
+            VarianceBias::DEFAULT,
+            0,
+        );
+        let std = sqrt(&var);
         (x - mean) / std * &self.weight + &self.bias
     }
 }
 
-impl<T: ReqOps> RWKV<T> {
+impl RWKV<Elem> {
     /// Evaluates a layer. Each layer must be evaluated in sequence,
     /// serially as they each generate "x" and also require "x" as input.
     pub fn evaluate_layer(
         &self,
-        mut x: Array<T>,
-        layer: &Layer<T>,
-        layer_state: &mut RWKVLayerState<T>,
-    ) -> Array<T> {
-        let x_ln1 = layer.ln[0].norm(&x.view());
-        let (dx, (tm_num, tm_den)) = layer.att.time_mixing(&x_ln1.view(), layer_state);
-        x += &dx;
+        mut x: Array<Elem>,
+        layer: &Layer<Elem>,
+        layer_state: &mut RWKVLayerState<Elem>,
+    ) -> Array<Elem> {
+        let x_ln1 = layer.ln[0].norm(&x);
+        let (dx, (tm_num, tm_den)) = layer.att.time_mixing(&x_ln1, layer_state);
+        x += dx;
 
-        let x_ln2 = layer.ln[1].norm(&x.view());
-        let dx = layer.ffn.channel_mixing(&x_ln2.view(), layer_state);
-        x += &dx;
+        let x_ln2 = layer.ln[1].norm(&x);
+        let dx = layer.ffn.channel_mixing(&x_ln2, layer_state);
+        x += dx;
 
         layer_state.update(x_ln1, tm_num, tm_den, x_ln2);
         x
     }
 
     /// Evaluate all the layers and return a list of probabilities.
-    pub fn evaluate(&self, token: usize, state: &mut [RWKVLayerState<T>]) -> Array<T> {
-        let emb = self.emb;
-        let initial_x = self.ln0.norm(self.emb[token]);
+    pub fn evaluate(&self, token: usize, state: &mut [RWKVLayerState<Elem>]) -> Array<Elem> {
+        let emb = &self.emb;
+        let initial_x = self.ln0.norm(&row(emb, token as i64));
 
         let x = self
             .layers
@@ -220,10 +226,10 @@ impl<T: ReqOps> RWKV<T> {
                 self.evaluate_layer(x, layer, &mut state[lnum])
             });
 
-        let x = pardot(&self.head, &self.ln_out.norm(&x.view()));
-        let x_max = x.fold(T::min_value(), |acc, el| acc.max(*el));
-        let e_x = (x - x_max).mapv(|el| el.exp());
+        let x = pardot(&self.head, &self.ln_out.norm(&x));
+        let x_max = max_all(&x).0;
+        let e_x = exp(&(x - x_max));
 
-        &e_x / e_x.sum()
+        &e_x / sum_all(&e_x).0
     }
 }

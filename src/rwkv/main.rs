@@ -4,26 +4,17 @@ use anyhow::{anyhow, Result};
 use ndarray::ArrayView1;
 use tokenizers::Tokenizer;
 
-/// Context related functions. Holds the model state and and last probabilities vector.
-pub mod context;
-/// Functions related to loading the model from disk.
-pub mod loader;
-/// The actual model and code related to evaluating it.
-pub mod model;
-/// Utility functions.
-pub mod util;
-
-use crate::{context::RWKVContext, model::RWKV, util::mmap_file};
+use super::{context::RWKVContext, model::RWKV, util::mmap_file};
 
 /// Used as the prompt.
 const PROMPT: &str = "\nIn a shocking finding, scientist discovered a herd of dragons living in a remote, previously unexplored valley, in Tibet. Even more surprising to the researchers was the fact that the dragons spoke perfect Chinese.";
 
 /// Example of a small model to try.
-const MODEL: &str = "./RWKV-4-Pile-430M-20220808-8066.safetensors";
+const MODEL: &str = "models/rwkv-430m/RWKV-4-Pile-430M-20220808-8066.safetensors";
 // const MODEL: &str = "../../models/RWKV-4-Pile-3B-20221110-ctx4096.safetensors";
 
 /// Tokenizer definition file. See README.
-const TOKENIZER: &str = "./20B_tokenizer.json";
+const TOKENIZER: &str = "models/rwkv-430m/20B_tokenizer.json";
 /// When enabled, we'll try to generate tokens forever by setting the probability of the
 /// EndOfText token to 0.0.
 const FOREVER: bool = true;
@@ -38,34 +29,34 @@ const TOP_P: f32 = 0.85;
 /// `f32` and `f64`
 type ModelType = f32;
 
-// fn main() -> Result<()> {
-//     let mut rng = rand::thread_rng();
-//     println!("* Loading tokenizer from: {TOKENIZER}");
-//     let tokenizer = Tokenizer::from_file(TOKENIZER).map_err(|e| anyhow!(e))?;
-//     println!("* Loading model from: {MODEL}");
-//     let rwkv: RWKV<ModelType> = mmap_file(MODEL)?.try_into()?;
-//     let mut context = RWKVContext::new(rwkv, tokenizer);
+fn main() -> Result<()> {
+    let mut rng = rand::thread_rng();
+    println!("* Loading tokenizer from: {TOKENIZER}");
+    let tokenizer = Tokenizer::from_file(TOKENIZER).map_err(|e| anyhow!(e))?;
+    println!("* Loading model from: {MODEL}");
+    let rwkv: RWKV<ModelType> = mmap_file(MODEL)?.try_into()?;
+    let mut context = RWKVContext::new(rwkv, tokenizer);
 
-//     // Helper to print out a string without a newline and then flush the console.
-//     let show_token = |token| {
-//         print!("{token}");
-//         std::io::stdout().flush().ok();
-//     };
-//     let mut do_sample = |probs: &ArrayView1<ModelType>| {
-//         Ok(sample_probs(&mut rng, probs, FOREVER, TEMPERATURE, TOP_P))
-//     };
+    // Helper to print out a string without a newline and then flush the console.
+    let show_token = |token| {
+        print!("{token}");
+        std::io::stdout().flush().ok();
+    };
+    let mut do_sample = |probs: &ArrayView1<ModelType>| {
+        Ok(sample_probs(&mut rng, probs, FOREVER, TEMPERATURE, TOP_P))
+    };
 
-//     println!(
-//         "* Loaded: layers={}, embed={}, vocab={}",
-//         context.n_layers, context.n_embed, context.n_vocab
-//     );
+    println!(
+        "* Loaded: layers={}, embed={}, vocab={}",
+        context.n_layers, context.n_embed, context.n_vocab
+    );
 
-//     context.feed_prompt(PROMPT, Some(show_token))?;
+    context.feed_prompt(PROMPT, Some(show_token))?;
 
-//     while let Some(token) = context.infer_next_token(&mut do_sample)? {
-//         show_token(token);
-//     }
+    while let Some(token) = context.infer_next_token(&mut do_sample)? {
+        show_token(token);
+    }
 
-//     println!(" [end of text]");
-//     Ok(())
-// }
+    println!(" [end of text]");
+    Ok(())
+}

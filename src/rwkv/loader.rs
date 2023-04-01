@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use super::{
     model::*,
-    util::{ConvertBF16Tensor, ReqOps},
+    util::{ConvertBF16Tensor, Elem},
 };
 
 /// LayerMap helper type to avoid repetition.
@@ -23,7 +23,7 @@ fn gk<O>(m: &LM, k: &str, f: impl Fn(&TensorView) -> O) -> Result<O> {
 /// Requires the ConvertBF16Tensor trait (from `crate::utils`) due to
 /// tensors being stored in bfloat16 format which isn't suitable for
 /// actual calculation.
-impl<T: ConvertBF16Tensor> TryFrom<Mmap> for RWKV<T> {
+impl TryFrom<Mmap> for RWKV<Elem> {
     type Error = Error;
 
     fn try_from(value: Mmap) -> std::result::Result<Self, Self::Error> {
@@ -35,16 +35,16 @@ impl<T: ConvertBF16Tensor> TryFrom<Mmap> for RWKV<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<(usize, &LM<'_>)> for LayerNorm<T> {
+impl TryFrom<(usize, &LM<'_>)> for LayerNorm<Elem> {
     type Error = Error;
 
     fn try_from((idx, lm): (usize, &HashMap<String, TensorView<'_>>)) -> Result<Self> {
         Ok(Self {
-            bias: T::tensor_to_array1(
+            bias: Elem::tensor_to_array1(
                 lm.get(&format!("ln{idx}.bias"))
                     .ok_or_else(|| anyhow!("Bad format"))?,
             ),
-            weight: T::tensor_to_array1(
+            weight: Elem::tensor_to_array1(
                 lm.get(&format!("ln{idx}.weight"))
                     .ok_or_else(|| anyhow!("Bad format"))?,
             ),
@@ -52,59 +52,59 @@ impl<T: ConvertBF16Tensor> TryFrom<(usize, &LM<'_>)> for LayerNorm<T> {
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for AttTime<T> {
+impl TryFrom<&LM<'_>> for AttTime<Elem> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(AttTime {
-            first: gk(lm, "att.time_first", T::tensor_to_array1)?,
-            decay: gk(lm, "att.time_decay", T::tensor_to_array1)?,
-            mix_k: Mix(gk(lm, "att.time_mix_k", T::tensor_to_array1)?),
-            mix_v: Mix(gk(lm, "att.time_mix_v", T::tensor_to_array1)?),
-            mix_r: Mix(gk(lm, "att.time_mix_r", T::tensor_to_array1)?),
+            first: gk(lm, "att.time_first", Elem::tensor_to_array1)?,
+            decay: gk(lm, "att.time_decay", Elem::tensor_to_array1)?,
+            mix_k: Mix(gk(lm, "att.time_mix_k", Elem::tensor_to_array1)?),
+            mix_v: Mix(gk(lm, "att.time_mix_v", Elem::tensor_to_array1)?),
+            mix_r: Mix(gk(lm, "att.time_mix_r", Elem::tensor_to_array1)?),
         })
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for Attention<T> {
+impl TryFrom<&LM<'_>> for Attention<Elem> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(Attention {
-            key_weight: gk(lm, "att.key.weight", T::tensor_to_array2)??,
-            value_weight: gk(lm, "att.value.weight", T::tensor_to_array2)??,
-            output_weight: gk(lm, "att.output.weight", T::tensor_to_array2)??,
-            receptance_weight: gk(lm, "att.receptance.weight", T::tensor_to_array2)??,
+            key_weight: gk(lm, "att.key.weight", Elem::tensor_to_array2)??,
+            value_weight: gk(lm, "att.value.weight", Elem::tensor_to_array2)??,
+            output_weight: gk(lm, "att.output.weight", Elem::tensor_to_array2)??,
+            receptance_weight: gk(lm, "att.receptance.weight", Elem::tensor_to_array2)??,
             time: AttTime::try_from(lm)?,
         })
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FFNTime<T> {
+impl TryFrom<&LM<'_>> for FFNTime<Elem> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(FFNTime {
-            mix_k: Mix(gk(lm, "ffn.time_mix_k", T::tensor_to_array1)?),
-            mix_r: Mix(gk(lm, "ffn.time_mix_r", T::tensor_to_array1)?),
+            mix_k: Mix(gk(lm, "ffn.time_mix_k", Elem::tensor_to_array1)?),
+            mix_r: Mix(gk(lm, "ffn.time_mix_r", Elem::tensor_to_array1)?),
         })
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&LM<'_>> for FeedForwardNetwork<T> {
+impl TryFrom<&LM<'_>> for FeedForwardNetwork<Elem> {
     type Error = Error;
 
     fn try_from(lm: &LM<'_>) -> Result<Self> {
         Ok(FeedForwardNetwork {
-            key_weight: gk(lm, "ffn.key.weight", T::tensor_to_array2)??,
-            value_weight: gk(lm, "ffn.value.weight", T::tensor_to_array2)??,
-            receptance_weight: gk(lm, "ffn.receptance.weight", T::tensor_to_array2)??,
+            key_weight: gk(lm, "ffn.key.weight", Elem::tensor_to_array2)??,
+            value_weight: gk(lm, "ffn.value.weight", Elem::tensor_to_array2)??,
+            receptance_weight: gk(lm, "ffn.receptance.weight", Elem::tensor_to_array2)??,
             time: FFNTime::try_from(lm)?,
         })
     }
 }
 
-impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
+impl TryFrom<&SafeTensors<'_>> for RWKV<Elem> {
     type Error = Error;
 
     fn try_from(tensors: &SafeTensors<'_>) -> Result<Self> {
@@ -150,18 +150,18 @@ impl<T: ConvertBF16Tensor> TryFrom<&SafeTensors<'_>> for RWKV<T> {
                 })
                 //
             })
-            .collect::<Result<Vec<Layer<T>>, _>>()?;
+            .collect::<Result<Vec<Layer<Elem>>, _>>()?;
         let l0m = tm.get(&Some(0)).unwrap();
         let nlm = tm
             .get(&None)
             .ok_or_else(|| anyhow!("Missing non-layer tensors!"))?;
         println!("* Loading non-layer tensors.");
         Ok(RWKV {
-            emb: gk(nlm, "emb.weight", T::tensor_to_array2)??,
-            head: gk(nlm, "head.weight", T::tensor_to_array2)??,
+            emb: gk(nlm, "emb.weight", Elem::tensor_to_array2)??,
+            head: gk(nlm, "head.weight", Elem::tensor_to_array2)??,
             ln_out: LayerNorm {
-                bias: gk(nlm, "ln_out.bias", T::tensor_to_array1)?,
-                weight: gk(nlm, "ln_out.weight", T::tensor_to_array1)?,
+                bias: gk(nlm, "ln_out.bias", Elem::tensor_to_array1)?,
+                weight: gk(nlm, "ln_out.weight", Elem::tensor_to_array1)?,
             },
             ln0: LayerNorm::try_from((0, l0m))?,
             layers,
