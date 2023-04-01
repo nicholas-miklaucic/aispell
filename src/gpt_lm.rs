@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 use std::str::from_utf8;
 use std::sync::Mutex;
 
+use crate::lm::LM;
 use lazy_static::lazy_static;
 use rust_bert::gpt2::{GPT2LMHeadModel, Gpt2Config};
 use rust_bert::gpt_neo::{GptNeoConfig, GptNeoForCausalLM};

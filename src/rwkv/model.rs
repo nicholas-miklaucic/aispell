@@ -1,40 +1,40 @@
 #![allow(clippy::upper_case_acronyms)]
-use ndarray::{Array1, Array2, ArrayView1, Axis};
+use arrayfire::{constant, exp, meanvar, sqrt, view, Array, HasAfEnum, VarianceBias};
 
 use super::util::{pardot, sigmoid, ReqOps};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 /// Corresponds to:
 /// 1. blocks.N.att.time_mix_[kvr]
 /// 2. blocks.N.ffn.time_mix_[kr]
-pub struct Mix<T>(pub Array1<T>);
+pub struct Mix<T: ReqOps>(pub Array<T>);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 /// Corresponds to:
 /// 1. ln_out.[bias,weight]
 /// 2. blocks.N.ln[012].[bias,weight]
 /// However, note that ln0 only exists in block 0.
-pub struct LayerNorm<T> {
-    pub bias: Array1<T>,
-    pub weight: Array1<T>,
+pub struct LayerNorm<T: ReqOps> {
+    pub bias: Array<T>,
+    pub weight: Array<T>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 /// Corresponds to:
 /// 1. blocks.N.time_[first,decay]
 /// 2. blocks.N.time_mix_[kvr]
-pub struct AttTime<T> {
-    pub decay: Array1<T>,
+pub struct AttTime<T: ReqOps> {
+    pub decay: Array<T>,
     pub mix_k: Mix<T>,
     pub mix_v: Mix<T>,
     pub mix_r: Mix<T>,
-    pub first: Array1<T>,
+    pub first: Array<T>,
 }
 
 /// Corresponds to:
 /// 1. blocks.N.ffn.time_mix_[kr]
-#[derive(Debug, Clone, PartialEq)]
-pub struct FFNTime<T> {
+#[derive(Clone)]
+pub struct FFNTime<T: ReqOps> {
     pub mix_k: Mix<T>,
     pub mix_r: Mix<T>,
 }
@@ -42,31 +42,31 @@ pub struct FFNTime<T> {
 /// Corresponds to:
 /// 1. blocks.N.att.[key,value,output,receptance].weight
 /// 3. Keys described in AttTime.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Attention<T> {
-    pub key_weight: Array2<T>,
-    pub value_weight: Array2<T>,
-    pub output_weight: Array2<T>,
-    pub receptance_weight: Array2<T>,
+#[derive(Clone)]
+pub struct Attention<T: ReqOps> {
+    pub key_weight: Array<T>,
+    pub value_weight: Array<T>,
+    pub output_weight: Array<T>,
+    pub receptance_weight: Array<T>,
     pub time: AttTime<T>,
 }
 
 /// Corresponds to:
 /// 1. blocks.N.ffn.[key,value,receptance].weight
 /// 3. Keys described in FFNTime.
-#[derive(Debug, Clone, PartialEq)]
-pub struct FeedForwardNetwork<T> {
-    pub key_weight: Array2<T>,
-    pub value_weight: Array2<T>,
-    pub receptance_weight: Array2<T>,
+#[derive(Clone)]
+pub struct FeedForwardNetwork<T: ReqOps> {
+    pub key_weight: Array<T>,
+    pub value_weight: Array<T>,
+    pub receptance_weight: Array<T>,
     pub time: FFNTime<T>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 /// See the comments for Attention, FeedForwardNetwork and LayerNorm.
 /// Note though that the array of LayerNorm here corresponds with
 /// blocks.N.ln[12] so array index 0 is ln1.
-pub struct Layer<T> {
+pub struct Layer<T: ReqOps> {
     /// ln[0] (AKA ln1) is used for time mixing,
     /// ln[1] (AKA ln2) is used for channel mixing.
     pub ln: [LayerNorm<T>; 2],
@@ -74,12 +74,12 @@ pub struct Layer<T> {
     pub ffn: FeedForwardNetwork<T>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RWKV<T> {
+#[derive(Clone)]
+pub struct RWKV<T: ReqOps> {
     /// emb.weight
-    pub emb: Array2<T>,
+    pub emb: Array<T>,
     /// head.weight
-    pub head: Array2<T>,
+    pub head: Array<T>,
     /// ln_out.[weight,bias]
     pub ln_out: LayerNorm<T>,
     /// This is actually blocks.0.ln0
@@ -87,22 +87,22 @@ pub struct RWKV<T> {
     pub layers: Vec<Layer<T>>,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 /// Each layer has its own independent state.
-pub struct RWKVLayerState<T> {
+pub struct RWKVLayerState<T: ReqOps> {
     /// State from time mixing.
-    pub tm_state: Array1<T>,
+    pub tm_state: Array<T>,
     /// Time mixing numerator?
-    pub tm_num: Array1<T>,
+    pub tm_num: Array<T>,
     /// Time mixing denominator?
-    pub tm_den: Array1<T>,
+    pub tm_den: Array<T>,
     /// State from channel mixing.
-    pub cm_state: Array1<T>,
+    pub cm_state: Array<T>,
 }
 
 impl<T: ReqOps> RWKVLayerState<T> {
     pub fn new(n_embed: usize) -> Self {
-        let zs = Array1::zeros(n_embed);
+        let zs = constant!(T::zero(); n_embed as u64);
         Self {
             tm_state: zs.clone(),
             tm_num: zs.clone(),
@@ -114,10 +114,10 @@ impl<T: ReqOps> RWKVLayerState<T> {
     /// Updates the state for this layer.
     pub fn update(
         &mut self,
-        tm_state: Array1<T>,
-        tm_num: Array1<T>,
-        tm_den: Array1<T>,
-        cm_state: Array1<T>,
+        tm_state: Array<T>,
+        tm_num: Array<T>,
+        tm_den: Array<T>,
+        cm_state: Array<T>,
     ) {
         *self = Self {
             tm_state,
@@ -129,30 +129,30 @@ impl<T: ReqOps> RWKVLayerState<T> {
 }
 
 impl<T: ReqOps> Mix<T> {
-    pub fn mix(&self, x: &ArrayView1<T>, last_x: &ArrayView1<T>) -> Array1<T> {
-        x * &self.0 + last_x * (T::one() - &self.0)
+    pub fn mix(&self, x: &Array<T>, last_x: &Array<T>) -> Array<T> {
+        x * &self.0 + last_x * (-self.0 + T::one())
     }
 }
 
 impl<T: ReqOps> Attention<T> {
     pub fn time_mixing(
         &self,
-        x: &ArrayView1<T>,
+        x: &Array<T>,
         state: &RWKVLayerState<T>,
-    ) -> (Array1<T>, (Array1<T>, Array1<T>)) {
-        let last_x = &state.tm_state.view();
-        let last_num = &state.tm_num.view();
-        let last_den = &state.tm_den.view();
+    ) -> (Array<T>, (Array<T>, Array<T>)) {
+        let last_x = &state.tm_state;
+        let last_num = &state.tm_num;
+        let last_den = &state.tm_den;
 
         let k = pardot(&self.key_weight, &self.time.mix_k.mix(x, last_x));
         let v = pardot(&self.value_weight, &self.time.mix_v.mix(x, last_x));
         let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(x, last_x));
 
-        let exp_k = k.mapv(|el| el.exp());
-        let exp_decay = self.time.decay.mapv(|el| (-el.exp()).exp());
+        let exp_k = exp(&k);
+        let exp_decay = exp(&-exp(&self.time.decay));
 
         let wkv = {
-            let e = (&self.time.first + &k).mapv(|el| el.exp());
+            let e = exp(&(&self.time.first + &k));
             (last_num + &e * &v) / (last_den + e)
         };
         let rwkv = sigmoid(&r) * wkv;
@@ -164,7 +164,7 @@ impl<T: ReqOps> Attention<T> {
 }
 
 impl<T: ReqOps> FeedForwardNetwork<T> {
-    pub fn channel_mixing(&self, x: &ArrayView1<T>, state: &RWKVLayerState<T>) -> Array1<T> {
+    pub fn channel_mixing(&self, x: &Array<T>, state: &RWKVLayerState<T>) -> Array<T> {
         let last_x = &state.cm_state.view();
         let k = pardot(&self.key_weight, &self.time.mix_k.mix(x, last_x));
         let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(x, last_x));
@@ -179,9 +179,9 @@ impl<T: ReqOps> FeedForwardNetwork<T> {
 
 impl<T: ReqOps> LayerNorm<T> {
     /// Normalize a 1D array.
-    pub fn norm(&self, x: &ArrayView1<T>) -> Array1<T> {
-        let mean = x.mean().unwrap();
-        let std = x.std(T::zero());
+    pub fn norm(&self, x: &Array<T>) -> Array<T> {
+        let (mean, var) = meanvar(x, constant!(1; x.elements()), VarianceBias::DEFAULT, 0);
+        let std = sqrt(var);
         (x - mean) / std * &self.weight + &self.bias
     }
 }
@@ -191,10 +191,10 @@ impl<T: ReqOps> RWKV<T> {
     /// serially as they each generate "x" and also require "x" as input.
     pub fn evaluate_layer(
         &self,
-        mut x: Array1<T>,
+        mut x: Array<T>,
         layer: &Layer<T>,
         layer_state: &mut RWKVLayerState<T>,
-    ) -> Array1<T> {
+    ) -> Array<T> {
         let x_ln1 = layer.ln[0].norm(&x.view());
         let (dx, (tm_num, tm_den)) = layer.att.time_mixing(&x_ln1.view(), layer_state);
         x += &dx;
@@ -208,8 +208,9 @@ impl<T: ReqOps> RWKV<T> {
     }
 
     /// Evaluate all the layers and return a list of probabilities.
-    pub fn evaluate(&self, token: usize, state: &mut [RWKVLayerState<T>]) -> Array1<T> {
-        let initial_x = self.ln0.norm(&self.emb.index_axis(Axis(0), token));
+    pub fn evaluate(&self, token: usize, state: &mut [RWKVLayerState<T>]) -> Array<T> {
+        let emb = self.emb;
+        let initial_x = self.ln0.norm(self.emb[token]);
 
         let x = self
             .layers

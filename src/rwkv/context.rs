@@ -1,7 +1,7 @@
 #![allow(clippy::upper_case_acronyms)]
 
 use anyhow::{anyhow, Result};
-use ndarray::{Array1, ArrayView1};
+use arrayfire::{constant, Array, DType};
 use tokenizers::Tokenizer;
 
 use super::{
@@ -10,13 +10,13 @@ use super::{
 };
 
 /// Context that holds the state of the RWKV model.
-pub struct RWKVContext<T> {
+pub struct RWKVContext<T: ReqOps> {
     /// The RWKV model data — immutable.
     pub rwkv: RWKV<T>,
     /// Model state.
     pub state: Vec<RWKVLayerState<T>>,
     /// Probabilities from the last step (starts filled with zeros).
-    pub last_probs: Array1<T>,
+    pub last_probs: Array<T>,
     /// The tokenizer.
     pub tokenizer: Tokenizer,
 
@@ -30,19 +30,18 @@ pub struct RWKVContext<T> {
 
 impl<T: ReqOps> RWKVContext<T> {
     pub fn new(rwkv: RWKV<T>, tokenizer: Tokenizer) -> Self {
-        let n_embed = rwkv.emb.shape()[1];
+        let [n_vocab, n_embed, _, _] = rwkv.emb.dims().get();
         let n_layers = rwkv.layers.len();
-        let n_vocab = rwkv.emb.shape()[0];
 
-        let initial_state = std::iter::repeat(RWKVLayerState::new(n_embed))
+        let initial_state = std::iter::repeat(RWKVLayerState::new(*n_embed as usize))
             .take(n_layers)
             .collect::<Vec<_>>();
-        let initial_probs = Array1::zeros(n_vocab);
+        let initial_probs = constant!(T::zero(); *n_vocab);
 
         Self {
-            n_embed,
+            n_embed: *n_embed as usize,
             n_layers,
-            n_vocab,
+            n_vocab: *n_vocab as usize,
             rwkv,
             state: initial_state,
             last_probs: initial_probs,
@@ -76,9 +75,9 @@ impl<T: ReqOps> RWKVContext<T> {
     /// vector and figures out what token to pick.
     pub fn infer_next_token(
         &mut self,
-        mut samplefun: impl FnMut(&ArrayView1<T>) -> Result<usize>,
+        mut samplefun: impl FnMut(&Array<T>) -> Result<usize>,
     ) -> Result<Option<String>> {
-        let tokid = samplefun(&self.last_probs.view())?;
+        let tokid = samplefun(&self.last_probs)?;
         if tokid == 0 {
             return Ok(None);
         }

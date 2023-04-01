@@ -1,16 +1,19 @@
+use arrayfire::Array;
 use cached::proc_macro::cached;
 use cached::SizedCache;
 use fast_symspell::{AsciiStringStrategy, Suggestion, SymSpell, SymSpellBuilder, Verbosity};
 use lm::LM;
 use model::Model;
+use rwkv::softmax;
 use serde::{Deserialize, Serialize};
-use tch::{Kind, Tensor};
 
 pub mod edit;
 pub mod lm;
 pub mod model;
-pub mod onnx_lm;
 pub mod rwkv;
+
+#[cfg(feature = "transformers")]
+pub mod onnx_lm;
 
 #[cfg(all(feature = "rust_bert", feature = "iced"))]
 pub mod checker;
@@ -78,13 +81,13 @@ pub fn corrections<T: Model<u8>, L: LM<u8>>(
         })
         .collect();
 
-    let losses = Tensor::of_slice(
+    let losses = Array::new(
         &corrs
             .iter()
             .map(|corr| lang_model.loss(context.unwrap_or(". ").as_bytes(), corr.term.as_bytes()))
             .collect::<Vec<_>>(),
     );
-    let losses = (losses * -1).softmax(0, Kind::Float);
+    let losses = softmax(losses * -1);
     for (corr, loss) in corrs.iter_mut().zip(losses.iter::<f64>().unwrap()) {
         corr.lm_prob = loss;
         corr.prob = corr.kbd_prob * corr.lm_prob;
@@ -102,7 +105,7 @@ pub fn corrections<T: Model<u8>, L: LM<u8>>(
 
 #[cfg(test)]
 mod tests {
-    use crate::{model::KbdModel, onnx_lm::BLOOM};
+    use crate::{model::KbdModel, rwkv::RWKV_430M};
 
     use super::*;
     use pretty_assertions::assert_eq;
@@ -152,7 +155,7 @@ mod tests {
     #[test]
     fn test_corrections() {
         let orig = "otol";
-        let lm = BLOOM.lock().unwrap();
+        let lm = RWKV_430M.lock().unwrap();
         let corrs = corrections(orig, 1, &KbdModel::default(), None, &*lm);
         assert_eq!(
             corrs.into_iter().map(|c| c.term).collect::<Vec<String>>(),
@@ -167,7 +170,7 @@ mod tests {
     #[test]
     fn test_corrections_ctxt() {
         let orig = "Pairs";
-        let lm = BLOOM.lock().unwrap();
+        let lm = RWKV_430M.lock().unwrap();
         let corrs = corrections(
             orig,
             1,

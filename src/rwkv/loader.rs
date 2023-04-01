@@ -4,7 +4,10 @@ use safetensors::{tensor::TensorView, SafeTensors};
 
 use std::collections::HashMap;
 
-use super::{model::*, util::ConvertBF16Tensor};
+use super::{
+    model::*,
+    util::{ConvertBF16Tensor, ReqOps},
+};
 
 /// LayerMap helper type to avoid repetition.
 type LM<'a> = HashMap<String, safetensors::tensor::TensorView<'a>>;

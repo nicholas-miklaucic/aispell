@@ -1,37 +1,42 @@
-use std::ops::Sub;
-
 use anyhow::{anyhow, Result};
+use arrayfire::{dim4, Array, ConstGenerator, HasAfEnum};
 use mmap_rs::{MmapFlags, MmapOptions};
-use ndarray::{Array1, Array2, ArrayView1, ArrayView2, NdFloat, ScalarOperand, Zip};
-use num_traits::FromPrimitive;
+use num_traits::{One, Zero};
 use safetensors::tensor::TensorView;
 
-/// Basically all the math stuff ndarray supports and we need for evaluating
-/// RWKV
-pub trait ReqOps: Sized + Default + Clone
+pub trait BaseReqOps
 where
-    Self: NdFloat + ScalarOperand + FromPrimitive,
-    Self: for<'a> Sub<&'a Array1<Self>, Output = Array1<Self>>,
+    Self: Sized + Default + Clone + HasAfEnum + Zero + One + ConstGenerator<OutType = Self>,
+{
+}
+
+impl<T> BaseReqOps for T where
+    T: Sized + Default + Clone + HasAfEnum + Zero + One + ConstGenerator<OutType = T>
+{
+}
+
+pub trait ReqOps
+where
+    Self: BaseReqOps,
+    <Self as HasAfEnum>::UnaryOutType: BaseReqOps,
 {
 }
 
 impl ReqOps for f32 {}
 impl ReqOps for f64 {}
 
-/// Converting bfloat16 format tensors to 1D or 2D arrays of float (only implemented for f32).
-/// You could implement it for f64, but there's no practical reason to do so. Unfortunately,
-/// you can't easily implement it for smaller types (16bit, 8bit, etc).
 pub trait ConvertBF16Tensor: ReqOps {
-    fn tensor_to_array1(tensor: &TensorView<'_>) -> Array1<Self>;
-    fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array2<Self>>;
+    fn tensor_to_array1(tensor: &TensorView<'_>) -> Array<Self>;
+    fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array<Self>>;
 }
 
 impl ConvertBF16Tensor for f32 {
-    fn tensor_to_array1(tensor: &TensorView<'_>) -> Array1<Self> {
-        Array1::from(bf16_tensor_to_f32(tensor))
+    fn tensor_to_array1(tensor: &TensorView<'_>) -> Array<Self> {
+        let f32_t = bf16_tensor_to_f32(tensor);
+        Array::new(&f32_t, dim4!(f32_t.len() as u64, 1, 1, 1))
     }
 
-    fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array2<Self>> {
+    fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array<Self>> {
         // Squeeze all the things.
         let shp = tensor
             .shape()
@@ -40,10 +45,10 @@ impl ConvertBF16Tensor for f32 {
             .filter(|i| i != &1)
             .collect::<Vec<usize>>();
         anyhow::ensure!(shp.len() == 2, "Bad shape");
-        Ok(Array2::from_shape_vec(
-            (shp[0], shp[1]),
-            bf16_tensor_to_f32(tensor),
-        )?)
+        Ok(Array::new(
+            &bf16_tensor_to_f32(tensor),
+            dim4!(shp[0], shp[1], 1, 1),
+        ))
     }
 }
 
@@ -62,7 +67,7 @@ pub fn mmap_file(s: &str) -> Result<mmap_rs::Mmap> {
     }
 }
 
-pub fn sigmoid<T: ReqOps>(x: &Array1<T>) -> Array1<T> {
+pub fn sigmoid<T: ReqOps>(x: &Array<T>) -> Array<T> {
     x.map(|val| T::one() / (T::one() + (-(*val)).exp()))
 }
 
@@ -134,28 +139,12 @@ fn bf16_tensor_to_f32(tensor: &TensorView<'_>) -> Vec<f32> {
 
 #[allow(dead_code)]
 mod dumdot {
-    use super::{Array1, Array2, ArrayView1, ArrayView2, ReqOps, Zip};
-    use ndarray::{parallel::prelude::*, Axis};
+    use arrayfire::{matmul, MatProp};
 
-    /// The simple implementation of parallel matrix-vector multiplication using Rayon.
-    /// Presumably this calculates every single row separately which could add some overhead.
-    pub fn pardotv_simple<T: ReqOps>(lhs: &ArrayView2<T>, rhs: &ArrayView1<T>) -> Array1<T> {
-        Zip::from(lhs.outer_iter()).par_map_collect(|row| row.dot(rhs))
-    }
+    use super::{Array, ReqOps};
 
-    /// Chunked parallel matrix-vector multiplication. However, it requires copying results
-    /// around. Intuitively you might think it's better but just eyeballing the speed of the results
-    /// looks about the same as the other function.
-    pub fn pardotv_chunked<T: ReqOps>(lhs: &ArrayView2<T>, rhs: &ArrayView1<T>) -> Array1<T> {
-        lhs.axis_chunks_iter(Axis(0), 64)
-            .into_par_iter()
-            .flat_map_iter(|x| x.dot(rhs))
-            .collect::<Vec<_>>()
-            .into()
-    }
-
-    pub fn pardot<T: ReqOps>(lhs: &Array2<T>, rhs: &Array1<T>) -> Array1<T> {
-        pardotv_chunked(&lhs.view(), &rhs.view())
+    pub fn pardot<T: ReqOps>(lhs: &Array<T>, rhs: &Array<T>) -> Array<T> {
+        matmul(lhs, rhs, MatProp::NONE, MatProp::NONE)
     }
 }
 pub use dumdot::pardot;

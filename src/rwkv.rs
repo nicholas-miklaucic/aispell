@@ -12,9 +12,8 @@ pub mod util;
 use std::{collections::HashMap, path::Path, str::from_utf8, sync::Mutex};
 
 use anyhow::Result;
+use arrayfire::{exp, index, max, sigmoid, sum, Array};
 use lazy_static::lazy_static;
-use ndarray::{s, Array2, Axis};
-use tch::{IndexOp, Kind, Reduction, Tensor};
 use tokenizers::Tokenizer;
 
 use crate::{
@@ -22,20 +21,97 @@ use crate::{
     rwkv::{model::RWKVLayerState, util::pardot},
 };
 
-use self::{model::RWKV, util::mmap_file};
+use self::{
+    model::RWKV,
+    util::{mmap_file, ReqOps},
+};
+
+/// The RWKV model state, including a loss.
+#[derive(Clone)]
+pub struct LossState<T: ReqOps> {
+    /// The previous tokens.
+    pub tokens: Vec<u32>,
+    /// The output logits for the next token. None if no prior state exists.
+    pub logits: Option<Array<T>>,
+    /// The model state.
+    pub state: Vec<RWKVLayerState<T>>,
+    /// The loss.
+    pub loss: f64,
+}
+
+pub fn softmax<T: ReqOps>(x: Array<T>) -> Array<T> {
+    let exp_x = exp(&(x - max(&x, 0)));
+    exp_x / sum(&exp_x)
+}
+
+/// Like PyTorch item(), converts [x] to x. Panics if array is bigger than 1
+/// element.
+pub fn item<T: ReqOps>(x: Array<T>) -> T {
+    assert_eq!(
+        x.elements(),
+        1,
+        "item(): Input {} is not one-dimensional",
+        x.dims()
+    );
+
+    let mut out = vec![Default::default(); x.elements()];
+    x.host(&mut out);
+    out[0]
+}
+
+impl<T: ReqOps> LossState<T> {
+    /// Initializes an empty state.
+    pub fn new_empty(n_layers: usize, n_embed: usize) -> Self {
+        Self {
+            tokens: Default::default(),
+            logits: None,
+            state: std::iter::repeat(RWKVLayerState::new(n_embed))
+                .take(n_layers)
+                .collect(),
+            loss: 0.0,
+        }
+    }
+
+    /// Processes a new list of tokens.
+    pub fn process_state(&mut self, tokens: &[u32], rwkv: &RWKV<T>) -> Self {
+        let [n_vocab, n_embed, _, _] = rwkv.emb.dims().get();
+        let n_layers = rwkv.layers.len();
+
+        for token in tokens.iter() {
+            self.loss += match self.logits {
+                Some(x) => -f64::from(index(&softmax(x), token)).log(),
+                None => 0.0,
+            };
+            let initial_x = rwkv.ln0.norm(&rwkv.emb[token]);
+
+            let x = rwkv
+                .layers
+                .iter()
+                .enumerate()
+                .fold(initial_x, |x, (lnum, layer)| {
+                    rwkv.evaluate_layer(x, layer, &mut self.state[lnum])
+                });
+
+            self.logits = pardot(&rwkv.head, &rwkv.ln_out.norm(&x.view()));
+            self.tokens.push(token);
+        }
+
+        self
+    }
+}
 
 /// LM using BlinkDL's RWKV.
 #[derive(Debug)]
-pub struct RwkvLM {
+pub struct RwkvLM<T: ReqOps> {
     /// The tokenizer.
     tokenizer: Tokenizer,
     /// The model itself.
     model: RWKV<f32>,
     /// The cache of computed states.
-    cache: Mutex<HashMap<String, Tensor>>,
+    cache: Mutex<HashMap<Vec<u32>, LossState<T>>>,
 }
 
-impl RwkvLM {
+impl<T: ReqOps> RwkvLM<T> {
     pub fn try_new() -> Result<Self> {
         let models_path = Path::new("./models/rwkv-430m");
         let model_path = models_path.join("RWKV-4-Pile-430M-20220808-8066.safetensors");
@@ -49,91 +125,41 @@ impl RwkvLM {
             cache: Default::default(),
         })
     }
-
-    pub(crate) fn compute_logits_uncached(&self, text: &str) -> Tensor {
-        dbg!(text);
-        let rwkv = &self.model;
-        let tokens: Vec<u32> = self
-            .tokenizer
-            .encode(text, true)
-            .unwrap()
-            .get_ids()
-            .to_vec();
-
-        let n_tokens = tokens.len();
-
-        let [n_vocab, n_embed] = rwkv.emb.shape() else { panic!("Shape is wrong")};
-        let n_layers = rwkv.layers.len();
-        let mut state = std::iter::repeat(RWKVLayerState::new(*n_embed))
-            .take(n_layers)
-            .collect::<Vec<_>>();
-
-        let mut logits = Array2::default([n_tokens, *n_vocab]);
-        for (i, token) in tokens.into_iter().enumerate() {
-            let initial_x = rwkv.ln0.norm(&rwkv.emb.index_axis(Axis(0), token as usize));
-
-            let x = rwkv
-                .layers
-                .iter()
-                .enumerate()
-                .fold(initial_x, |x, (lnum, layer)| {
-                    rwkv.evaluate_layer(x, layer, &mut state[lnum])
-                });
-
-            let x = pardot(&rwkv.head, &rwkv.ln_out.norm(&x.view()));
-
-            logits.slice_mut(s![i, ..]).assign(&x);
-        }
-
-        let mut model_output = logits.insert_axis(Axis(0));
-        model_output.swap_axes(1, 2);
-        model_output.as_standard_layout().try_into().unwrap()
-    }
 }
 
-impl LM<u8> for RwkvLM {
+impl<T: ReqOps> LM<u8> for RwkvLM<T> {
     fn loss(&self, context: &[u8], completion: &[u8]) -> f64 {
-        let text = from_utf8(context).unwrap().to_owned() + from_utf8(completion).unwrap();
-        let tokens = self.tokenizer.encode(text, true).unwrap();
+        let rwkv = &self.model;
+        let [n_vocab, n_embed, _, _] = rwkv.emb.dims().get();
+        let n_layers = rwkv.layers.len();
 
-        let input_str = self
-            .tokenizer
-            .decode(tokens.get_ids()[..tokens.len() - 1].to_vec(), true)
-            .unwrap();
+        let pretext = from_utf8(context).unwrap().to_owned();
+        let text = from_utf8(completion).unwrap().to_owned();
+        let pre_tokens = self.tokenizer.encode(pretext, true).unwrap().get_ids();
+        let tokens = self.tokenizer.encode(text, true).unwrap().get_ids();
 
-        let input_ids: Tensor = tokens
-            .get_ids()
-            .iter()
-            .map(|&x| x as i64)
-            .collect::<Vec<i64>>()
-            .as_slice()
-            .into();
+        let map = *self.cache.lock().unwrap();
 
-        let map = &mut *self.cache.lock().unwrap();
+        let pre_state = map.entry(context.to_vec()).or_insert_with_key(|k| {
+            let mut st = LossState::new_empty(n_layers, n_embed);
+            st.process_state(pre_tokens, rwkv)
+        });
 
-        let logits = map
-            .entry(input_str)
-            .or_insert_with_key(|k| self.compute_logits_uncached(k));
+        let state = pre_state;
+        let mut curr_tokens = pre_tokens.clone();
+        for token in tokens {
+            curr_tokens.push(token);
+            let state = map.entry(curr_tokens).or_insert_with_key(|k| {
+                state.clone().process_state(token, rwkv);
+            });
+        }
 
-        // dbg!(logits.size(), input_ids.size());
-
-        let loss: f64 = logits
-            .cross_entropy_loss::<Tensor>(
-                &input_ids.i(1..).view((1, -1)),
-                None,
-                Reduction::None,
-                -100,
-                0.0,
-            )
-            .sum_dim_intlist([1_i64].as_slice(), false, Kind::Float)
-            .into();
-
-        loss
+        state.loss
     }
 }
 
 lazy_static! {
-    pub static ref RWKV_430M: Mutex<RwkvLM> = RwkvLM::try_new().unwrap().into();
+    pub static ref RWKV_430M: Mutex<RwkvLM<f32>> = RwkvLM::try_new().unwrap().into();
 }
 
 #[cfg(test)]
