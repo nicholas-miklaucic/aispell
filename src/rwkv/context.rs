@@ -1,24 +1,27 @@
 #![allow(clippy::upper_case_acronyms)]
 
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
-use arrayfire::{constant, Array};
+
+use tch::{Device, Tensor};
 use tokenizers::Tokenizer;
 
 use super::{
     model::{RWKVLayerState, RWKV},
-    util::{Elem, ReqOps},
+    util::ELEM,
 };
 
 /// Context that holds the state of the RWKV model.
-pub struct RWKVContext<T: ReqOps> {
+pub struct RWKVContext {
     /// The RWKV model data — immutable.
-    pub rwkv: RWKV<T>,
+    pub rwkv: RWKV,
     /// Model state.
-    pub state: Vec<RWKVLayerState<T>>,
+    pub state: Vec<RWKVLayerState>,
     /// Probabilities from the last step (starts filled with zeros).
-    pub last_probs: Array<T>,
+    pub last_probs: Tensor,
     /// The tokenizer.
-    pub tokenizer: Tokenizer,
+    pub tokenizer: Arc<Tokenizer>,
 
     /// Number of vocabulary items.
     pub n_vocab: usize,
@@ -28,25 +31,39 @@ pub struct RWKVContext<T: ReqOps> {
     pub n_layers: usize,
 }
 
-impl RWKVContext<Elem> {
-    pub fn new(rwkv: RWKV<Elem>, tokenizer: Tokenizer) -> Self {
-        let dims = rwkv.emb.dims();
-        let [n_vocab, n_embed, _, _] = dims.get();
+impl Clone for RWKVContext {
+    fn clone(&self) -> Self {
+        Self {
+            rwkv: self.rwkv.clone(),
+            state: self.state.clone(),
+            last_probs: self.last_probs.copy(),
+            tokenizer: self.tokenizer.clone(),
+            n_vocab: self.n_vocab.clone(),
+            n_embed: self.n_embed.clone(),
+            n_layers: self.n_layers.clone(),
+        }
+    }
+}
+
+impl RWKVContext {
+    pub fn new(rwkv: RWKV, tokenizer: Tokenizer) -> Self {
+        let dims = rwkv.emb.size();
+        let [n_vocab, n_embed, ..] = dims[..] else { panic!() };
         let n_layers = rwkv.layers.len();
 
-        let initial_state = std::iter::repeat(RWKVLayerState::new(*n_embed as usize))
+        let initial_state = std::iter::repeat(RWKVLayerState::new(n_embed as usize))
             .take(n_layers)
             .collect::<Vec<_>>();
-        let initial_probs = constant!(0.0; *n_vocab);
+        let initial_probs = Tensor::zeros(&[n_vocab], (ELEM, Device::Cpu));
 
         Self {
-            n_embed: *n_embed as usize,
+            n_embed: n_embed as usize,
             n_layers,
-            n_vocab: *n_vocab as usize,
+            n_vocab: n_vocab as usize,
             rwkv,
             state: initial_state,
             last_probs: initial_probs,
-            tokenizer,
+            tokenizer: tokenizer.into(),
         }
     }
 
@@ -76,7 +93,7 @@ impl RWKVContext<Elem> {
     /// vector and figures out what token to pick.
     pub fn infer_next_token(
         &mut self,
-        mut samplefun: impl FnMut(&Array<Elem>) -> Result<usize>,
+        mut samplefun: impl FnMut(&Tensor) -> Result<usize>,
     ) -> Result<Option<String>> {
         let tokid = samplefun(&self.last_probs)?;
         if tokid == 0 {

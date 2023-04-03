@@ -1,71 +1,26 @@
 use anyhow::{anyhow, Result};
-use arrayfire::{dim4, print, Array, ConstGenerator, HasAfEnum, ImplicitPromote};
 use mmap_rs::{MmapFlags, MmapOptions};
-use num_traits::{One, Zero};
 use safetensors::tensor::TensorView;
+use tch::{Kind, Tensor};
 
-pub trait BaseReqOps
-where
-    Self: Sized
-        + Default
-        + Clone
-        + HasAfEnum
-        + Zero
-        + One
-        + ConstGenerator<OutType = Self>
-        + ImplicitPromote<f64>,
-{
+pub const ELEM: tch::Kind = Kind::BFloat16;
+
+pub fn tensor_to_array1(tensor: &TensorView<'_>) -> Tensor {
+    let elem_t = bf16_tensor_to_elem(tensor);
+    let arr = Tensor::of_slice(&elem_t);
+    arr
 }
 
-impl<T> BaseReqOps for T where
-    T: Sized
-        + Default
-        + Clone
-        + HasAfEnum
-        + Zero
-        + One
-        + ConstGenerator<OutType = T>
-        + ImplicitPromote<f64>
-{
-}
-
-pub trait ReqOps
-where
-    Self: BaseReqOps,
-{
-}
-
-impl ReqOps for f32 {}
-impl ReqOps for f64 {}
-
-pub type Elem = f32;
-
-pub trait ConvertBF16Tensor: ReqOps {
-    fn tensor_to_array1(tensor: &TensorView<'_>) -> Array<Self>;
-    fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array<Self>>;
-}
-
-impl ConvertBF16Tensor for Elem {
-    fn tensor_to_array1(tensor: &TensorView<'_>) -> Array<Self> {
-        let elem_t = bf16_tensor_to_elem(tensor);
-        let arr = Array::new(&elem_t, dim4!(elem_t.len() as u64, 1, 1, 1));
-        arr
-    }
-
-    fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Array<Self>> {
-        dbg!(tensor.shape());
-        let shp = tensor
-            .shape()
-            .iter()
-            .copied()
-            .filter(|i| i != &1)
-            .collect::<Vec<usize>>();
-        anyhow::ensure!(shp.len() == 2, "Bad shape");
-        Ok(Array::new(
-            &bf16_tensor_to_elem(tensor),
-            dim4!(shp[0] as u64, shp[1] as u64, 1, 1),
-        ))
-    }
+pub fn tensor_to_array2(tensor: &TensorView<'_>) -> Result<Tensor> {
+    let shp = tensor
+        .shape()
+        .iter()
+        .copied()
+        .filter(|i| i != &1)
+        .collect::<Vec<usize>>();
+    anyhow::ensure!(shp.len() == 2, "Bad shape");
+    let elem_t = bf16_tensor_to_elem(tensor);
+    Ok(Tensor::of_slice(&elem_t).reshape(&[shp[0] as i64, shp[1] as i64]))
 }
 
 /// Helper function for opening a file and mmaping it.
@@ -86,7 +41,7 @@ pub fn mmap_file(s: &str) -> Result<mmap_rs::Mmap> {
 /// Helper function to convert a SafeTensors TensorView into a flat
 /// vector of Elem. The number of dimensions doesn't matter at this
 /// point.
-fn bf16_tensor_to_elem(tensor: &TensorView<'_>) -> Vec<Elem> {
+fn bf16_tensor_to_elem(tensor: &TensorView<'_>) -> Vec<f32> {
     assert_eq!(tensor.dtype(), safetensors::Dtype::BF16);
     tensor
         .data()
@@ -151,12 +106,10 @@ fn bf16_tensor_to_elem(tensor: &TensorView<'_>) -> Vec<Elem> {
 
 #[allow(dead_code)]
 mod dumdot {
-    use arrayfire::{matmul, FloatingPoint, MatProp};
+    use super::Tensor;
 
-    use super::{Array, ReqOps};
-
-    pub fn pardot<T: ReqOps + FloatingPoint>(lhs: &Array<T>, rhs: &Array<T>) -> Array<T> {
-        matmul(lhs, rhs, MatProp::NONE, MatProp::NONE)
+    pub fn pardot(lhs: &Tensor, rhs: &Tensor) -> Tensor {
+        lhs.matmul(rhs)
     }
 }
 pub use dumdot::pardot;

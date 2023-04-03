@@ -1,126 +1,184 @@
 #![allow(clippy::upper_case_acronyms)]
-use arrayfire::{
-    clamp, constant, exp, max_all, meanvar, pow, row, sigmoid, sqrt, sum_all, Array, VarianceBias,
-};
+use tch::{Device, IndexOp, Kind, Tensor};
 
-use super::util::{pardot, Elem, ReqOps};
+use super::util::{pardot, ELEM};
 
-#[derive(Clone)]
 /// Corresponds to:
 /// 1. blocks.N.att.time_mix_[kvr]
 /// 2. blocks.N.ffn.time_mix_[kr]
-pub struct Mix<T: ReqOps>(pub Array<T>);
+pub struct Mix(pub Tensor);
 
-#[derive(Clone)]
+impl Clone for Mix {
+    fn clone(&self) -> Self {
+        Self(self.0.copy())
+    }
+}
+
 /// Corresponds to:
 /// 1. ln_out.[bias,weight]
 /// 2. blocks.N.ln[012].[bias,weight]
 /// However, note that ln0 only exists in block 0.
-pub struct LayerNorm<T: ReqOps> {
-    pub bias: Array<T>,
-    pub weight: Array<T>,
+pub struct LayerNorm {
+    pub bias: Tensor,
+    pub weight: Tensor,
 }
 
-#[derive(Clone)]
+impl Clone for LayerNorm {
+    fn clone(&self) -> Self {
+        Self {
+            bias: self.bias.copy(),
+            weight: self.weight.copy(),
+        }
+    }
+}
+
 /// Corresponds to:
 /// 1. blocks.N.time_[first,decay]
 /// 2. blocks.N.time_mix_[kvr]
-pub struct AttTime<T: ReqOps> {
-    pub decay: Array<T>,
-    pub mix_k: Mix<T>,
-    pub mix_v: Mix<T>,
-    pub mix_r: Mix<T>,
-    pub first: Array<T>,
+pub struct AttTime {
+    pub decay: Tensor,
+    pub mix_k: Mix,
+    pub mix_v: Mix,
+    pub mix_r: Mix,
+    pub first: Tensor,
+}
+
+impl Clone for AttTime {
+    fn clone(&self) -> Self {
+        Self {
+            decay: self.decay.copy(),
+            mix_k: self.mix_k.clone(),
+            mix_v: self.mix_v.clone(),
+            mix_r: self.mix_r.clone(),
+            first: self.first.copy(),
+        }
+    }
 }
 
 /// Corresponds to:
 /// 1. blocks.N.ffn.time_mix_[kr]
 #[derive(Clone)]
-pub struct FFNTime<T: ReqOps> {
-    pub mix_k: Mix<T>,
-    pub mix_r: Mix<T>,
+pub struct FFNTime {
+    pub mix_k: Mix,
+    pub mix_r: Mix,
 }
 
 /// Corresponds to:
 /// 1. blocks.N.att.[key,value,output,receptance].weight
 /// 3. Keys described in AttTime.
-#[derive(Clone)]
-pub struct Attention<T: ReqOps> {
-    pub key_weight: Array<T>,
-    pub value_weight: Array<T>,
-    pub output_weight: Array<T>,
-    pub receptance_weight: Array<T>,
-    pub time: AttTime<T>,
+pub struct Attention {
+    pub key_weight: Tensor,
+    pub value_weight: Tensor,
+    pub output_weight: Tensor,
+    pub receptance_weight: Tensor,
+    pub time: AttTime,
+}
+
+impl Clone for Attention {
+    fn clone(&self) -> Self {
+        Self {
+            key_weight: self.key_weight.copy(),
+            value_weight: self.value_weight.copy(),
+            output_weight: self.output_weight.copy(),
+            receptance_weight: self.receptance_weight.copy(),
+            time: self.time.clone(),
+        }
+    }
 }
 
 /// Corresponds to:
 /// 1. blocks.N.ffn.[key,value,receptance].weight
 /// 3. Keys described in FFNTime.
-#[derive(Clone)]
-pub struct FeedForwardNetwork<T: ReqOps> {
-    pub key_weight: Array<T>,
-    pub value_weight: Array<T>,
-    pub receptance_weight: Array<T>,
-    pub time: FFNTime<T>,
+pub struct FeedForwardNetwork {
+    pub key_weight: Tensor,
+    pub value_weight: Tensor,
+    pub receptance_weight: Tensor,
+    pub time: FFNTime,
 }
 
-#[derive(Clone)]
+impl Clone for FeedForwardNetwork {
+    fn clone(&self) -> Self {
+        Self {
+            key_weight: self.key_weight.copy(),
+            value_weight: self.value_weight.copy(),
+            receptance_weight: self.receptance_weight.copy(),
+            time: self.time.clone(),
+        }
+    }
+}
+
 /// See the comments for Attention, FeedForwardNetwork and LayerNorm.
 /// Note though that the array of LayerNorm here corresponds with
 /// blocks.N.ln[12] so array index 0 is ln1.
-pub struct Layer<T: ReqOps> {
+#[derive(Clone)]
+pub struct Layer {
     /// ln[0] (AKA ln1) is used for time mixing,
     /// ln[1] (AKA ln2) is used for channel mixing.
-    pub ln: [LayerNorm<T>; 2],
-    pub att: Attention<T>,
-    pub ffn: FeedForwardNetwork<T>,
+    pub ln: [LayerNorm; 2],
+    pub att: Attention,
+    pub ffn: FeedForwardNetwork,
 }
 
-#[derive(Clone)]
-pub struct RWKV<T: ReqOps> {
+pub struct RWKV {
     /// emb.weight
-    pub emb: Array<T>,
+    pub emb: Tensor,
     /// head.weight
-    pub head: Array<T>,
+    pub head: Tensor,
     /// ln_out.[weight,bias]
-    pub ln_out: LayerNorm<T>,
+    pub ln_out: LayerNorm,
     /// This is actually blocks.0.ln0
-    pub ln0: LayerNorm<T>,
-    pub layers: Vec<Layer<T>>,
+    pub ln0: LayerNorm,
+    pub layers: Vec<Layer>,
 }
 
-#[derive(Clone)]
-/// Each layer has its own independent state.
-pub struct RWKVLayerState<T: ReqOps> {
-    /// State from time mixing.
-    pub tm_state: Array<T>,
-    /// Time mixing numerator?
-    pub tm_num: Array<T>,
-    /// Time mixing denominator?
-    pub tm_den: Array<T>,
-    /// State from channel mixing.
-    pub cm_state: Array<T>,
-}
-
-impl<T: ReqOps> RWKVLayerState<T> {
-    pub fn new(n_embed: usize) -> Self {
-        let zs = constant!(T::zero(); n_embed as u64);
+impl Clone for RWKV {
+    fn clone(&self) -> Self {
         Self {
-            tm_state: zs.clone(),
-            tm_num: zs.clone(),
-            tm_den: zs.clone(),
+            emb: self.emb.copy(),
+            head: self.head.copy(),
+            ln_out: self.ln_out.clone(),
+            ln0: self.ln0.clone(),
+            layers: self.layers.clone(),
+        }
+    }
+}
+
+/// Each layer has its own independent state.
+pub struct RWKVLayerState {
+    /// State from time mixing.
+    pub tm_state: Tensor,
+    /// Time mixing numerator?
+    pub tm_num: Tensor,
+    /// Time mixing denominator?
+    pub tm_den: Tensor,
+    /// State from channel mixing.
+    pub cm_state: Tensor,
+}
+
+impl Clone for RWKVLayerState {
+    fn clone(&self) -> Self {
+        Self {
+            tm_state: self.tm_state.copy(),
+            tm_num: self.tm_num.copy(),
+            tm_den: self.tm_den.copy(),
+            cm_state: self.cm_state.copy(),
+        }
+    }
+}
+
+impl RWKVLayerState {
+    pub fn new(n_embed: usize) -> Self {
+        let zs = Tensor::zeros(&[n_embed as i64], (ELEM, Device::Cpu));
+        Self {
+            tm_state: zs.copy(),
+            tm_num: zs.copy(),
+            tm_den: zs.copy(),
             cm_state: zs,
         }
     }
 
     /// Updates the state for this layer.
-    pub fn update(
-        &mut self,
-        tm_state: Array<T>,
-        tm_num: Array<T>,
-        tm_den: Array<T>,
-        cm_state: Array<T>,
-    ) {
+    pub fn update(&mut self, tm_state: Tensor, tm_num: Tensor, tm_den: Tensor, cm_state: Tensor) {
         *self = Self {
             tm_state,
             tm_num,
@@ -130,77 +188,67 @@ impl<T: ReqOps> RWKVLayerState<T> {
     }
 }
 
-impl Mix<Elem> {
-    pub fn mix(&self, x: &Array<Elem>, last_x: &Array<Elem>) -> Array<Elem> {
-        let ans: Array<Elem> = x * &self.0 + last_x * (1.0_f32 - &self.0);
-        ans
+impl Mix {
+    pub fn mix(&self, x: &Tensor, last_x: &Tensor) -> Tensor {
+        // dbg!(x.size(), last_x.size(), self.0.size());
+        x * &self.0 + last_x * (1.0_f32 - &self.0)
     }
 }
 
-impl Attention<Elem> {
-    pub fn time_mixing(
-        &self,
-        x: &Array<Elem>,
-        state: &RWKVLayerState<Elem>,
-    ) -> (Array<Elem>, (Array<Elem>, Array<Elem>)) {
+impl Attention {
+    pub fn time_mixing(&self, x: &Tensor, state: &RWKVLayerState) -> (Tensor, (Tensor, Tensor)) {
         let last_x = &state.tm_state;
         let last_num = &state.tm_num;
         let last_den = &state.tm_den;
 
-        let k = pardot(&self.key_weight, &self.time.mix_k.mix(x, last_x));
-        let v = pardot(&self.value_weight, &self.time.mix_v.mix(x, last_x));
-        let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(x, last_x));
+        let k = pardot(&self.key_weight, &self.time.mix_k.mix(&x, last_x));
+        let v = pardot(&self.value_weight, &self.time.mix_v.mix(&x, last_x));
+        let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(&x, last_x));
 
-        let exp_k = exp(&k);
-        let exp_decay = exp(&-exp(&self.time.decay));
+        let exp_k = k.exp();
+        let exp_decay = &self.time.decay;
 
         let wkv = {
-            let e = exp(&(&self.time.first + &k));
+            let e = (&self.time.first + k).exp();
             (last_num + &e * &v) / (last_den + e)
         };
-        let rwkv = sigmoid(&r) * wkv;
+        let rwkv = r.sigmoid() * wkv;
 
-        let num = &exp_decay * last_num + &exp_k * &v;
-        let den = &exp_decay * last_den + &exp_k;
+        let num = exp_decay * last_num + &exp_k * &v;
+        let den = exp_decay * last_den + &exp_k;
         (pardot(&self.output_weight, &rwkv), (num, den))
     }
 }
 
-impl FeedForwardNetwork<Elem> {
-    pub fn channel_mixing(&self, x: &Array<Elem>, state: &RWKVLayerState<Elem>) -> Array<Elem> {
+impl FeedForwardNetwork {
+    pub fn channel_mixing(&self, x: &Tensor, state: &RWKVLayerState) -> Tensor {
         let last_x = &state.cm_state;
         let k = pardot(&self.key_weight, &self.time.mix_k.mix(x, last_x));
         let r = pardot(&self.receptance_weight, &self.time.mix_r.mix(x, last_x));
-        let vk_vec: Array<Elem> = pow(&clamp(&k, &std::f32::MIN, &2.0, true), &2.0, true).cast();
+        let vk_vec = k.relu().square();
         let vk = pardot(&self.value_weight, &vk_vec);
 
-        sigmoid(&r) * &vk
+        r.sigmoid() * &vk
     }
 }
 
-impl LayerNorm<Elem> {
+impl LayerNorm {
     /// Normalize a 1D array.
-    pub fn norm(&self, x: &Array<Elem>) -> Array<Elem> {
-        let (mean, var) = meanvar(
-            x,
-            &constant!(1.0; x.elements() as u64),
-            VarianceBias::DEFAULT,
-            0,
-        );
-        let std = sqrt(&var);
+    pub fn norm(&self, x: &Tensor) -> Tensor {
+        let (std, mean) = x.std_mean_dim(vec![-1_i64].as_slice(), false, true);
         (x - mean) / std * &self.weight + &self.bias
     }
 }
 
-impl RWKV<Elem> {
+impl RWKV {
     /// Evaluates a layer. Each layer must be evaluated in sequence,
     /// serially as they each generate "x" and also require "x" as input.
     pub fn evaluate_layer(
         &self,
-        mut x: Array<Elem>,
-        layer: &Layer<Elem>,
-        layer_state: &mut RWKVLayerState<Elem>,
-    ) -> Array<Elem> {
+        mut x: Tensor,
+        layer: &Layer,
+        layer_state: &mut RWKVLayerState,
+    ) -> Tensor {
         let x_ln1 = layer.ln[0].norm(&x);
         let (dx, (tm_num, tm_den)) = layer.att.time_mixing(&x_ln1, layer_state);
         x += dx;
@@ -214,9 +262,9 @@ impl RWKV<Elem> {
     }
 
     /// Evaluate all the layers and return a list of probabilities.
-    pub fn evaluate(&self, token: usize, state: &mut [RWKVLayerState<Elem>]) -> Array<Elem> {
+    pub fn evaluate(&self, token: usize, state: &mut [RWKVLayerState]) -> Tensor {
         let emb = &self.emb;
-        let initial_x = self.ln0.norm(&row(emb, token as i64));
+        let initial_x = self.ln0.norm(&emb.i(token as i64));
 
         let x = self
             .layers
@@ -227,9 +275,6 @@ impl RWKV<Elem> {
             });
 
         let x = pardot(&self.head, &self.ln_out.norm(&x));
-        let x_max = max_all(&x).0;
-        let e_x = exp(&(x - x_max));
-
-        &e_x / sum_all(&e_x).0
+        x.softmax(-1, Kind::Float)
     }
 }

@@ -7,12 +7,11 @@ edition = "2021"
 wonnx = ["dep:wonnx", "transformers"]
 iced = ["dep:iced"]
 rust_bert = ["dep:rust-bert", "transformers"]
-transformers = ["dep:edge-transformers", "dep:rust_tokenizers", "dep:tch", "dep:ndarray", "dep:ort"]
+transformers = ["dep:edge-transformers", "dep:rust_tokenizers", "dep:ndarray", "dep:ort"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-arrayfire = "3.8.0"
 anyhow = "1.0.70"
 cached = "0.42.0"
 edge-transformers = {version = "0.1.0", features = ["cuda"], optional = true}
@@ -30,7 +29,7 @@ safetensors = "0.3.0"
 seqalign = "0.2.3"
 serde = { version = "1.0.158", features = ["derive"]}
 statrs = "0.16.0"
-tch = {version = "0.10.3", optional = true}
+tch = {version = "0.10.3"}
 tokenizers = "0.13.2"
 tokio = { version = "1", features = ["full"] }
 warp = "0.3"
